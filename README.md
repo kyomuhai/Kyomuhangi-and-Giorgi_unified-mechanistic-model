@@ -5,7 +5,7 @@ authors:  Irene Kyomuhangi (i.kyomuhangi@lancaster.ac.uk, kyomuhai@gmail.com)  a
 
 
 # Background
-This script contains syntax used for the analysis of malaria serology data as described in the paper: "A unified and flexible modelling framework for the analysis of malaria serology data" . Epidemiology & Infection, pages 1-18, 2021"
+This script contains syntax used for the analysis of malaria serology data as described in the paper: "A unified and flexible modelling framework for the analysis of malaria serology data" . Epidemiology & Infection, pages 1-18, 2021" DOI: https://doi.org/10.1017/S0950268821000753
 The antibody measurements used in this analysis are PfAMA OD values obtained from ELISA, however the methods are applicable to any malaria antigen type. 
 
 Throughout the script we indicate where the code may need to change depending on the dataset/antibody type under analysis. 
@@ -32,7 +32,7 @@ This code can be extended to include analysis using other variables/covariates a
 The syntax is split into 8 steps which cover: 
 1) implementation of the equations in the paper, and 
 2) the generation of figures and table in the paper. 
-3) 
+
 Explanations of the functions and operations used in the sytax are provided, and further details of statistical/mathematical principles of this analysis can be found in the paper. 
 
 The steps are as follows:
