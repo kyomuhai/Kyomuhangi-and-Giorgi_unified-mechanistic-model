@@ -1,0 +1,1375 @@
+---
+title: "UFM for malaria antobody analysis"
+author: "Irene Kyomuhangi,(i.kyomuhangi@lancaster.ac.uk) and Emanuele Giorgi (e.giorgi@lancaster.ac.uk), CHICAS  Lancaster University "
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Set the working directory 
+# setwd("XXXXX")
+```
+#BACKGROUND 
+
+This script contains syntax used for the analysis of malaria serology data as described in the paper: "A unified and flexible modelling framework for the analysis of malaria serology data" . Epidemiology & Infection, pages 1-18, 2021"
+The antibody measurements used in this analysis are PfAMA OD values obtained from ELISA, however the methods are applicable to any malaria antigen type. Throughout the script we indicate where the code may need to change depending on the dataset/antibody type under analysis. 
+To request access to the dataset used, please contact Gillian Stresman (Gillian.Stresman@lshtm.ac.uk) or Chris Drakeley (Chris.Drakeley@lshtm.ac.uk) at LSHTM.  
+
+The syntax is split into 8 steps which cover: 
+1) implementation of the equations in the paper, and 
+2) the generation of figures and table in the paper. 
+Explanations of the functions and operations used in the sytax are provided, and further details of statistical/mathematical principles of this analysis can be found in the paper. 
+The steps are as follows:
+STEP 1: DESCRIPTIVE AND EXPLORATIVE ANALYSIS OF THE DATA (FIGURES 1, 4, 5)
+STEP 2: FITTING THE UNIFIED MECHANISTIC MODEL (UFM)
+STEP 3: GENERATING 95% CIs FOR THE UFM PARAMETER ESTIMATES
+STEP 4: FITTING THE EMPIRICAL MODEL (EM)
+STEP 5: GENERATING 95% CIs FOR THE EM PARAMETER ESTIMATES
+STEP 6: COMPARING THE UFM AND EM (FIGURE 6)
+STEP 7: SHOWING HOW LAMBDA OVER TIME IN THE UFM (FIGURE 7)
+STEP 8: COMPARING THE UFM AND EM (TABLE 1)
+
+
+#STEP 1: DESCRIPTIVE AND EXPLORATIVE ANALYSIS OF THE DATA (FIGURES 1, 4, 5)
+In this section we generate descriptive graphs of the data, i.e Figures 4, 5 and 1 in the paper. Figure 4 looks at the age and OD distributions of the data, Figure 5 shows an exploratory analysis of the data, and Figure 1 illustrates the traditional mixture distribution from equation (1)
+
+```{r, SeroExplore, echo==FALSE}
+rm(list=ls())
+data <- read.csv("RedHot_XSS4_Ab_Spatial.csv") #load the dataset
+
+library(tidyverse)
+library(haven)
+library(lme4)
+library(stringr)
+
+
+#********************************************************************************************      
+#Prepare the dataset, and objects needed
+#********************************************************************************************  
+        y <- log(data$ama_norm)
+        a <- data$age
+        ind.age <- list()
+        max.age <- max(a)
+        max.vec <- function(vec,c) sapply(vec,function(x) max(x-c,0))
+        a.max <- max(a)
+        time.covar <- 0:(a.max-1)
+        n <- length(y)
+        n.sim <- 1000
+
+
+    ##Here we restrict analysis to individuals between ages 1-16, and remove individuals with missing OD and age. 
+          ind.na <- which(is.na(log(data$ama_norm)) | is.na(data$age)| data$ama_norm==0| data$age==0|data$age>16) #indicate exclusion criteria
+          data <- data[-ind.na,] #apply exclusion criteria
+          
+
+#********************************************************************************************      
+#Descriptive graphs
+#********************************************************************************************  
+          
+    #**************** 
+    ##Figure 4(a) 
+    #**************** 
+          
+      par(mar=c(5.1,5.5,4.1,2.1),mgp=c(4, 1, 0))
+      hist(data$age, breaks=40,cex.axis=1.5, cex.main=2, cex.sub=1.5, cex.axis=2, xlab="Age", main="a", xaxt='n', yaxt='n', cex.lab=2,ylab="Number of observations", ylim=c(0,1000))
+      axis(side=1, at=seq(0,16, 2),cex.axis=1.5)
+      axis(side=2, at=seq(0,1100, 200),cex.axis=2)
+    
+      
+    #****************   
+    ##Figure 4(b)  
+    #****************
+      
+      hist(log(data$ama_norm), breaks=40,cex.main=2, cex.sub=1.5, cex.lab=2, cex.axis=2, xlab="Log OD", main="b", ylab="Density", ylim=c(0,0.4),xaxt='n', xlim=c(-8,2),freq=F)
+      axis(side=1, at=seq(-8,2, 2),cex.axis=1.5)
+      par(mfrow=c(1,1))
+      
+
+      
+
+#********************************************************************************************      
+#Exploratory analysis
+#********************************************************************************************  
+
+    #****************   
+    ##Figure 5(a)  
+    #**************** 
+      
+      y <- log(data$ama_norm)
+      a <- data$age
+      library(dplyr)
+      amadata1 <- as.data.frame(cbind((data$age),log(data$ama_norm)))
+      names(amadata1) <- c("age","ab")
+      amadata1_summary <- amadata1 %>% 
+        dplyr::group_by(age) %>%   
+        dplyr::summarise(mean_ab = mean(ab),  
+                  sd_ab = sd(ab), 
+                  n_ab = n(), 
+                  SE_ab = sd(ab)/sqrt(n())) 
+      ama_plot <- ggplot(amadata1_summary, aes(age, mean_ab)) + 
+        geom_point() +  
+        geom_errorbar(aes(ymin = mean_ab - sd_ab, ymax = mean_ab + sd_ab), width=0.2)
+      
+      ama_plot + labs(y="Mean log OD", x = "Age") + 
+        ggtitle("a") + theme_classic() +theme(text = element_text(size=25)) +theme(plot.title = element_text(hjust = 0.5)) + scale_x_continuous(breaks = seq(0, 16, by = 2)) + ylim(-5, 1) + theme(axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)))
+      
+      
+    #**************************** 
+    ##Figures 1(a), 5(a), 5(b) and 1(b)
+    #****************************  
+      
+      #Here we fit a standard mixture model using the 'mixtools' package. 
+      library("mixtools")
+      #create a function which plots the mixture distribution: 
+      plot_mix_comps <- function(x, mu, sigma, lam) {
+        lam * dnorm(x, mu, sigma)
+      }
+      #fit the mixture model:
+      mixmdl <- normalmixEM(y, k = 2) # y=data, k= number of components
+      #Generate the plot of the mixture distribution:
+      mixmdl_plot <-  data.frame(x = mixmdl$x) %>%
+        ggplot() +
+        geom_histogram(aes(x, fill = "transparent", ..density..), binwidth = 0.2, colour = "black", fill = "white") + 
+       stat_function(geom = "line", fun = plot_mix_comps, args = list(mixmdl$mu[1], mixmdl$sigma[1], lam = mixmdl$lambda[1]),colour = "red", lwd = 1) +
+        stat_function(geom = "line", fun = plot_mix_comps, args = list(mixmdl$mu[2], mixmdl$sigma[2], lam = mixmdl$lambda[2]),colour = "blue", lwd = 1) +
+        ylab("Density") + # this is the plot of the distributions
+        xlab("Log Antibody measurement")  +  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"))
+      
+      #Plot Figure 1(a)  
+      mixmdl_plot + ggtitle("a") + theme(plot.title = element_text(hjust = 0.5))+ theme(text = element_text(size=25)) 
+      #Generate seropositives using the mean + 3sd rule: 
+      library(dplyr)
+      seropos <- data %>% 
+        dplyr::select(ama_norm, age)%>%
+        dplyr::mutate(y=log(ama_norm))
+      mixmd1_comp1_mu <-mixmdl$mu[1]
+      mixmd1_comp1_sigma <- mixmdl$sigma[1]
+      mixmd1_threshold <- (mixmd1_comp1_mu+3*mixmd1_comp1_sigma)
+      seropos <- seropos %>% dplyr::mutate(mixmd1_a_seropos = ifelse(y > (mixmd1_threshold),1, 0)) 
+      head(seropos)
+      mixmdl_plot + geom_vline(xintercept = mixmd1_threshold, linetype="longdash", 
+                color = "black", size=1) + ggtitle("a") +theme(plot.title = element_text(hjust = 0.5))+ theme(text = element_text(size=25)) 
+      mixmdl.sd.rule<- table(seropos$mixmd1_a_seropos)
+      mixmdl.prop.a <- round(prop.table(mixmdl.sd.rule),digits=2)
+      mixmdl.prop.a 
+      #Generate seroprevalence
+      library(data.table)
+      seroprev<-as.data.frame(setDT(seropos)[,.(.N,prop=sum(mixmd1_a_seropos)/.N),
+                                             by=age])
+      
+      #Plot Figure 5(a)  
+      par(mar=c(5.1,5.5,4.1,2.1),mgp=c(4, 1, 0))
+      plot(seroprev$age, seroprev$prop, cex=(seroprev$N/200), xlab="age", ylab="seroprevalance", main="b",cex.main=2, cex.sub=1.5, cex.lab=2, cex.axis=2,xaxt='n', ylim=c(0,0.2))
+      axis(side=1, at=seq(0,16, 2),cex.axis=1.5)
+      
+      #NOTE THAT: 
+      #Where there is poor seperation of the S- and S+ distributions, the 'mixtools' package may give inconsistent descriptions of these distributions, and in some cases the S- and S+ distributions are reversed. So always double-check to make sure  mixmdl$mu[1] > mixmdl$mu[2], i.e that the mean of the S- distribution is less than the mean of the S+ distribution. 
+      
+      
+      #Plot Figure 1(b)  
+      #extract the posterior probabilities from the mixture model(i.e mixmdl$posterior), remember to check that the components are not switched (see note above)
+      post.df <- as.data.frame(cbind(x = mixmdl$x, mixmdl$posterior))
+      head(post.df, 10)
+      #The following code labels the components, 0,1,3 to represent, S-, S+ and 'Inconclusive' respectively: 
+      post.df <-post.df %>% mutate(mixmd1.b.seropos = ifelse(comp.1 > 0.9, 1, 
+                                                    ifelse(comp.2> 0.9,0,3))) 
+      head(post.df) 
+      mixmdl.post.df <- table(post.df$mixmd1.b.seropos)
+      mixmdl.prop.b <- round(prop.table( mixmdl.post.df),digits=2)
+      mixmdl.prop.b
+        min.val.mixmdl <- post.df %>% 
+          dplyr::group_by(mixmd1.b.seropos) %>% 
+          dplyr::summarize( x = min(x))
+        
+        max.val.mixmdl <- post.df %>% 
+          dplyr::group_by(mixmd1.b.seropos) %>% 
+          dplyr::summarize(x = max(x))
+        min.val.mixmdl
+        lower.bound.int  <- as.double(min.val.mixmdl[3,2])
+        max.val.mixmdl
+        upper.bound.int <- as.double(max.val.mixmdl[3,2])
+        #plot the graph
+        mixmdl_plot + annotate(geom = "rect", xmin = lower.bound.int, xmax = upper.bound.int, ymin = 0, ymax = Inf,fill = "grey", colour = "black", alpha = 0.7) +ggtitle("b") + theme(plot.title = element_text(hjust = 0.5))+ theme(text = element_text(size=25))
+        #save the image
+        save.image("amadata.RData")
+
+
+```
+
+
+#STEP 2: FITTING THE UNIFIED MECHANISTIC MODEL (UFM)
+In this section we fit the UFM as described by equations 9, 10, 11 and 12 in the paper. This step includes creating functions to implement these equations and generating the parameter estimates for the UFM shown in Table 1. The 95% Confidence Intervals for these parameters will be generated in the next section, i.e. Step 3.  
+
+```{r, SeroLinear, echo==FALSE}
+
+      load("amadata.RData") #load the image saved in step 1
+
+#********************************************************************************************      
+#Prep objects
+#********************************************************************************************  
+      #These objects are needed for the functions we will be generating in this section
+      ind.age <- list()
+      max.age <- max(a)
+      max.vec <- function(vec,c) sapply(vec,function(x) max(x-c,0))
+      a.max <- max(a)
+      time.covar <- 0:(a.max-1)
+      
+
+#********************************************************************************************      
+#Create functions to implement equations 9, 10, 11 and 12
+#********************************************************************************************  
+
+    #**************************** 
+    ##Equation 9
+    #****************************  
+      compute.pr.a <- function(age,lambda.h,omega) {
+        pr <- sum(lambda.h[1:age]/sapply(1:age,function(h)
+          prod(1+lambda.h[h:age]+omega)))
+        return(pr)
+      }
+      compute.pr.a <- Vectorize(compute.pr.a,"age")   
+
+    #**************************** 
+    ##Equation 10
+    #****************************  
+      compute.mu.a <- function(age,gamma.h,r) {
+        mu <- sum(((1/(1+r))^(1:age))*gamma.h[1:age])
+        return(mu)
+      }
+      compute.mu.a <- Vectorize(compute.mu.a,"age") 
+      
+
+    #**************************** 
+    ##Combining equations 9,10, 11 and 12 to estimate the UFM parameters
+    #****************************  
+      #Equations 9,10, 11 and 12 are embedded in the following function according to the structure illustrated in Figure 3(a). 
+      #For this analysis, we selected constant boosting rate (gamma), and time-varying transmission rate (lambda) based on initial analysis (see paper for details. Note that since we've assumed gamma is constant, we only have the intercept g0 for the second line of equation 11)). This function can be modified such that the either, both, or neither of these parameters are time-varying, depending on the dataset and/or antigen being analysed. Initial analysis which tests these options and compares the AIC can inform choice. 
+      # Note that omega is fixed at 0.01 based on initial analysis (see paper for details). This can also be modified depending on the dataset and/or antigen being analysed.Initial analysis which tests different option for omega and compares the AIC can inform choice.
+      #At the heart of the UFM is the mixture model (see Figure 3(a)), therefore the function for the UFM is centered around the mixture model. 
+        
+      lr.estim.mixture <- function(messages=TRUE,
+                                        start.theta=NULL,
+                                        return.hessian=FALSE,
+                                        omega.fixed=0.01) {
+        a.max <- max(a)
+        
+        time.covar <- 0:(a.max-1)
+        p <- 3
+        if(is.null(start.theta)) start.theta <- c(rep(0,p+4)) #initialize starting parameters = 0
+        
+        #accounting for truncation of data (i.e because we are using 1-16yr olds instead of all the data)
+        threshold <- tapply(y,a,max) 
+        threshold.data <- sapply(a,function(i)
+          threshold[i])
+        
+        #log likelihood function for the UFM:
+        log.lik <- function(theta) {
+          #equation 11:
+          l0 <- theta[1] 
+          l1 <- theta[2] 
+          lambda.h <- exp(l0+l1*time.covar) 
+          g0 <- theta[3] 
+          gamma.h <- rep(exp(g0),length(time.covar))
+          #equation 12:
+          delta <- 1+exp(theta[p+1])
+          sigma2.mix1 <- exp(theta[p+2])
+          sigma2.mix2 <- exp(theta[p+3])
+          r <- exp(theta[p+4])
+          #omega is fixed (see paper for details):
+          omega <- omega.fixed
+          #equation 9:
+          pr.a.mix <- compute.pr.a(a,lambda.h,omega)
+          #equation 10:
+          mu.a.mix1 <- compute.mu.a(a,gamma.h,r)
+          mu.a.mix2 <- delta*mu.a.mix1
+          #natural log transformation of the mean and sd in equation 12:
+          mean.ln.mix1 <- log(mu.a.mix1/sqrt(1+sigma2.mix1/(mu.a.mix1^2)))
+          sd.ln.mix1 <- sqrt(log(1+sigma2.mix1/(mu.a.mix1^2)))
+          mean.ln.mix2 <- log(mu.a.mix2/sqrt(1+sigma2.mix2/(mu.a.mix2^2)))
+          sd.ln.mix2 <- sqrt(log(1+sigma2.mix2/(mu.a.mix2^2)))
+          #accounting for truncation in the distribution function:
+          trunc.prob <- pr.a.mix*pnorm(threshold.data,
+                                       mean=mean.ln.mix2,
+                                       sd=sd.ln.mix2,log=FALSE)+
+            (1-pr.a.mix)*pnorm(threshold.data,
+                               mean=mean.ln.mix1,
+                               sd=sd.ln.mix1,log=FALSE)
+          #probability density:
+          num <- (pr.a.mix*dnorm(y,
+                                 mean=mean.ln.mix2,
+                                 sd=sd.ln.mix2,log=FALSE)+
+                    (1-pr.a.mix)*dnorm(y,
+                                       mean=mean.ln.mix1,
+                                       sd=sd.ln.mix1,log=FALSE))
+          #the likelihood, accounting for truncation 
+          llik <- sum(log(num)-log(trunc.prob))
+        }
+        #optimization of the log likelihood: 
+        estim <-
+          nlminb(start.theta,
+                 function(x) -log.lik(x),
+                 control=list(trace=1*messages))
+        
+        library(numDeriv)
+        if(return.hessian) estim$H <- hessian(log.lik,estim$par)
+        #extracting the parameters from the UFM (see Table 1)
+        estim$lambda <- estim$par[1:2]
+        names(estim$lambda) <- c("lambda0","lambda1")
+        estim$gamma <- estim$par[3]
+        names(estim$gamma) <- c("gamma0")
+        estim$delta <-  1+exp(estim$par[p+1])
+        estim$sigma2.mix1 <-  exp(estim$par[p+2])
+        estim$sigma2.mix2 <-  exp(estim$par[p+3])
+        estim$r <- exp(estim$par[p+4]) 
+        estim$omega <- omega.fixed
+        estim$aic <- 2*length(estim$par)+2*estim$objective
+        return(estim)
+      }
+
+
+#********************************************************************************************      
+#Fit the UFM
+#********************************************************************************************  
+      estim.mix <- lr.estim.mixture(,,
+                            return.hessian = FALSE)
+      # save the data
+      save(estim.mix,data,file="ama.ufm.RData")
+
+
+
+```
+
+
+#STEP 3: GENERATING 95% CIs FOR THE UFM PARAMETER ESTIMATES
+In this section we generate 95% CIs for the parameters estimated in the estim.mix object in Step 2. We conduct this using parametric bootstrap (see paper for details). This step is computationally intensive, and at Lancaster we use the High End Computing (HEC) Cluster. The code below can be used in R, but will likely take a very long time. 
+
+```{r, interventions, echo==FALSE}
+rm(list=ls())
+
+#********************************************************************************************      
+#Initialization for the HEC
+#********************************************************************************************  
+      #Depending on the facilities provided at your institution, this initialisation code will be different. This code is for initialization for the HEC at Lancaster University, or other similar facilities
+        # job_id = Sys.getenv("JOB_ID")
+        # job_name= Sys.getenv("JOB_NAME")
+        # 
+        # message("Job ID ",job_id)
+        # message("Job Name ",job_name)
+
+
+      load("ama.ufm.RData") #load the data saved in step 2
+
+#********************************************************************************************      
+#Generate required vectors and objects
+#********************************************************************************************  
+        y <- log(data$ama_norm)
+        a <- data$age
+        ind.age <- list()
+        max.age <- max(a)
+        max.vec <- function(vec,c) sapply(vec,function(x) max(x-c,0))
+        a.max <- max(a)
+        time.covar <- 0:(a.max-1)
+        n <- length(y)
+        n.sim <- 1000
+
+
+#********************************************************************************************  
+#Re-introduce the functions from Step 2 
+#********************************************************************************************  
+      
+        #**************************** 
+        ##Equation 9
+        #****************************  
+            compute.pr.a <- function(age,lambda.h,omega) {
+              pr <- sum(lambda.h[1:age]/sapply(1:age,function(h)
+                prod(1+lambda.h[h:age]+omega)))
+              return(pr)
+            }
+            compute.pr.a <- Vectorize(compute.pr.a,"age")   
+
+        #**************************** 
+        ##Equation 10
+        #****************************  
+            compute.mu.a <- function(age,gamma.h,r) {
+              mu <- sum(((1/(1+r))^(1:age))*gamma.h[1:age])
+              return(mu)
+            }
+            compute.mu.a <- Vectorize(compute.mu.a,"age") 
+            
+    
+        #**************************** 
+        ##Combining equations 9,10, 11 and 12 to estimate the UFM parameters
+        #****************************  
+          lr.estim.mixture <- function(messages=TRUE,
+                                            start.theta=NULL,
+                                            return.hessian=FALSE,
+                                            omega.fixed=0.01) {
+            a.max <- max(a)
+            
+            time.covar <- 0:(a.max-1)
+            p <- 3
+            if(is.null(start.theta)) start.theta <- c(rep(0,p+4)) #initialize starting parameters = 0
+            
+            #accounting for truncation of data (i.e because we are using 1-16yr olds instead of all the data)
+            threshold <- tapply(y,a,max) 
+            threshold.data <- sapply(a,function(i)
+              threshold[i])
+            
+            #log likelihood function for the UFM:
+            log.lik <- function(theta) {
+              #equation 11:
+              l0 <- theta[1] 
+              l1 <- theta[2] 
+              lambda.h <- exp(l0+l1*time.covar) 
+              g0 <- theta[3] 
+              gamma.h <- rep(exp(g0),length(time.covar))
+              #equation 12:
+              delta <- 1+exp(theta[p+1])
+              sigma2.mix1 <- exp(theta[p+2])
+              sigma2.mix2 <- exp(theta[p+3])
+              r <- exp(theta[p+4])
+              #omega is fixed (see paper for details):
+              omega <- omega.fixed
+              #equation 9:
+              pr.a.mix <- compute.pr.a(a,lambda.h,omega)
+              #equation 10:
+              mu.a.mix1 <- compute.mu.a(a,gamma.h,r)
+              mu.a.mix2 <- delta*mu.a.mix1
+              #natural log transformation of the mean and sd in equation 12:
+              mean.ln.mix1 <- log(mu.a.mix1/sqrt(1+sigma2.mix1/(mu.a.mix1^2)))
+              sd.ln.mix1 <- sqrt(log(1+sigma2.mix1/(mu.a.mix1^2)))
+              mean.ln.mix2 <- log(mu.a.mix2/sqrt(1+sigma2.mix2/(mu.a.mix2^2)))
+              sd.ln.mix2 <- sqrt(log(1+sigma2.mix2/(mu.a.mix2^2)))
+              #accounting for truncation in the distribution function:
+              trunc.prob <- pr.a.mix*pnorm(threshold.data,
+                                           mean=mean.ln.mix2,
+                                           sd=sd.ln.mix2,log=FALSE)+
+                (1-pr.a.mix)*pnorm(threshold.data,
+                                   mean=mean.ln.mix1,
+                                   sd=sd.ln.mix1,log=FALSE)
+              #probability density:
+              num <- (pr.a.mix*dnorm(y,
+                                     mean=mean.ln.mix2,
+                                     sd=sd.ln.mix2,log=FALSE)+
+                        (1-pr.a.mix)*dnorm(y,
+                                           mean=mean.ln.mix1,
+                                           sd=sd.ln.mix1,log=FALSE))
+              #the likelihood, accounting for truncation 
+              llik <- sum(log(num)-log(trunc.prob))
+            }
+            #optimization of the log likelihood: 
+            estim <-
+              nlminb(start.theta,
+                     function(x) -log.lik(x),
+                     control=list(trace=1*messages))
+            
+            library(numDeriv)
+            if(return.hessian) estim$H <- hessian(log.lik,estim$par)
+            #extracting the parameters from the UFM (see Table 1)
+            estim$lambda <- estim$par[1:2]
+            names(estim$lambda) <- c("lambda0","lambda1")
+            estim$gamma <- estim$par[3]
+            names(estim$gamma) <- c("gamma0")
+            estim$delta <-  1+exp(estim$par[p+1])
+            estim$sigma2.mix1 <-  exp(estim$par[p+2])
+            estim$sigma2.mix2 <-  exp(estim$par[p+3])
+            estim$r <- exp(estim$par[p+4]) 
+            estim$omega <- omega.fixed
+            estim$aic <- 2*length(estim$par)+2*estim$objective
+            return(estim)
+          }
+
+
+#********************************************************************************************      
+#Extract the parameter estimates and objects from estim.mix into R objects
+#********************************************************************************************  
+      
+        #much of this code is copied from the lr.estim.mixture function. 
+        lambda <- estim.mix$lambda
+        gamma <- estim.mix$gamma
+        l0 <- estim.mix$lambda[1]
+        l1 <- estim.mix$lambda[2]
+        lambda.h <- exp(as.numeric(l0+l1*time.covar))
+        g0 <- estim.mix$gamma
+        gamma.h <- as.numeric(rep(exp(g0),length(time.covar)))
+        delta <- estim.mix$delta
+        sigma2.mix1 <- estim.mix$sigma2.mix1
+        sigma2.mix2 <- estim.mix$sigma2.mix2
+        r <- estim.mix$r
+        omega <- estim.mix$omega
+        pr.a.mix <- compute.pr.a(a,lambda.h,omega)
+        mu.a.mix1 <- compute.mu.a(a,gamma.h,r)
+        mu.a.mix2 <- delta*mu.a.mix1
+        library(truncnorm)
+        threshold <- tapply(y,a,max)
+        threshold.data <- sapply(a,function(i)
+        threshold[i])
+        mean.ln.mix1 <- log(mu.a.mix1/sqrt(1+sigma2.mix1/(mu.a.mix1^2)))
+        sd.ln.mix1 <- sqrt(log(1+sigma2.mix1/(mu.a.mix1^2)))
+        mean.ln.mix2 <- log(mu.a.mix2/sqrt(1+sigma2.mix2/(mu.a.mix2^2)))
+        sd.ln.mix2 <- sqrt(log(1+sigma2.mix2/(mu.a.mix2^2)))
+
+
+  #********************************************************************************************  
+  #Initiate lists to store the output from the bootstrap
+  #********************************************************************************************  
+        
+        #List for the bootstrap samples:
+        out.estim.mix.sim.pars <- list(lambda=matrix(NA,nrow=n.sim,ncol=2),  
+                                       gamma=matrix(NA,nrow=n.sim,ncol=1),
+                                       delta=rep(NA,n.sim),
+                                       sigma2.mix1=rep(NA,n.sim),
+                                       sigma2.mix2=rep(NA,n.sim),
+                                       r=rep(NA,n.sim),
+                                       omega=rep(NA,n.sim))
+        
+        #List for the initial estim.mix parameter values:
+        out.estim.mix.pars <- list(lambda=lambda,
+                                   gamma=gamma,
+                                   delta=delta,
+                                   sigma2.mix1=sigma2.mix1,
+                                   sigma2.mix2=sigma2.mix2,
+                                   r=r,
+                                   omega=omega)
+        
+  #********************************************************************************************        
+  #Run the simulation
+  #********************************************************************************************  
+
+      for (i in 1:n.sim) {
+        #Generate a sampling of seropositives and seronegatives:
+        S.pos <- rbinom(n,1,pr.a.mix)
+        which.pos <- which(S.pos==1)
+        n.pos <- length(which.pos)
+        n.neg <- n-n.pos
+        #Simulate y:
+        y.sim <- rep(NA,n)
+        y.sim[which.pos] <- rtruncnorm(n.pos,mean=mean.ln.mix2[which.pos],
+                                       sd=sd.ln.mix2[which.pos],
+                                       b=threshold.data[which.pos])
+        y.sim[-which.pos] <- rtruncnorm(n.neg,mean=mean.ln.mix1[-which.pos],
+                                        sd=sd.ln.mix1[-which.pos],
+                                        b=threshold.data[-which.pos])
+        y <- y.sim
+        #fit the model to the simulated y data:
+        estim.mix.sim <- lr.estim.mixture(,,
+                                          return.hessian = FALSE)
+        #extract the parameter estimates:
+        lambda.hat <- estim.mix.sim$lambda
+        gamma.hat <- estim.mix.sim$gamma
+        delta.hat <- estim.mix.sim$delta
+        sigma2.mix1.hat <- estim.mix.sim$sigma2.mix1
+        sigma2.mix2.hat <- estim.mix.sim$sigma2.mix2
+        r.hat <- estim.mix.sim$r
+        omega.hat <- estim.mix.sim$omega
+        #save the parameter estimates the out.estim.mix.sim.pars list:
+        out.estim.mix.sim.pars$lambda[i,] <- lambda.hat
+        out.estim.mix.sim.pars$gamma[i,] <- gamma.hat
+        out.estim.mix.sim.pars$delta[i] <- delta.hat
+        out.estim.mix.sim.pars$sigma2.mix1[i] <- sigma2.mix1.hat
+        out.estim.mix.sim.pars$sigma2.mix2[i] <- sigma2.mix2.hat
+        out.estim.mix.sim.pars$r[i] <- r.hat
+        out.estim.mix.sim.pars$omega[i] <- omega.hat
+        cat("Iter:",i,"\r")
+        }
+        #save estimates from estim.mix
+        save(out.estim.mix.pars,file=paste0("out.estim.mix.pars.ama.RData")) 
+        #save estimates from the bootstrap simulation
+        save(out.estim.mix.sim.pars,file=paste0("out.estim.mix.sim.pars.ama.UFM.RData"))
+
+```
+
+#STEP 4: FITTING THE EMPIRICAL MODEL (EM)
+In this section we fit the EM as described by equations 12, 14, and 15 in the paper. This step includes creating functions to implement these equations and generating the parameter estimates for the EM shown in Table 1. The 95% Confidence Intervals for these parameters will be generated in the next section, i.e. Step 5.  
+
+```{r, interventions, echo==FALSE}
+rm(list=ls())
+load("ama.ufm.RData") #load the data saved in step 2
+
+#********************************************************************************************      
+#Generate required vectors and objects
+#********************************************************************************************  
+        y <- log(data$ama_norm)
+        a <- data$age
+        ind.age <- list()
+        max.age <- max(a)
+
+#********************************************************************************************      
+#Create functions to implement equations 12, 13, 14, and 15
+#******************************************************************************************** 
+        
+      #For this analysis, we selected a linear spline with a knot at age 10 for equation 14, based on results from figure 5(a) (see paper for details). This may need to be modified depending on the dataset and/or antigen being analysed. 
+      #We also select log age as logit linear predictor for equation 15 based on figure 5(b). Where results from figure 5(b) are inconclusive (eg due to limitations of the 'mixtools package described in Step 1 of this syntax), consider using age a simple linear predictor (i.e. age instead of log age). This may also need to be modified depending on the dataset and/or antigen being analysed. Choice of which linear predictor to use can be guided by AIC comparison
+        
+        #********************************************* 
+        ##Linear predictors as decribed in equation 13
+        #*********************************************  
+          formula.mean.y <- ~ age + I((age>10)*(age-10))
+          formula.mix.prob <- ~ log(age)
+  
+                  
+        #**************************** 
+        ##Equation 12, 14 and 15
+        #****************************  
+        #Equations 12, 13, 14, and 15 are embedded in the following function according to the structure illustrated in Figure 3(b). 
+        #At the heart of the UFM is the mixture model (see Figure 3(b)), therefore the function for the EM is centered around the mixture model. 
+          lr.estim.mixture.emp <- function(formula.mean.y,
+                                           formula.mix.prob,messages=TRUE,
+                                           start.theta=NULL,
+                                           return.hessian=FALSE) {
+            a.max <- max(a)
+            #matrix for equation 14:
+            D.t.y <- model.matrix(formula.mean.y,data=data.frame(age=a))
+            #matrix for equation 15:
+            D.t.mix.prob <- model.matrix(formula.mix.prob,data=data.frame(age=a))
+            
+            time.covar <- 0:(a.max-1)
+            #number of params for equation 14: 
+            p.mean.y <- ncol(D.t.y)
+            #number of params for equation 15: 
+            p.mix.prob <- ncol(D.t.mix.prob)
+            #initialize starting parameters = 0:
+            if(is.null(start.theta)) start.theta <- c(rep(0,p.mean.y+p.mix.prob+3)) 
+            #accounting for truncation of data (i.e because we are using 1-16yr olds instead of all the data)
+            threshold <- tapply(y,a,max)
+            threshold.data <- sapply(a,function(i)
+              threshold[i])
+            #log likelihood function for the EM:
+            log.lik <- function(theta) {
+              #equation 14 params: 
+              beta <- theta[1:p.mean.y]
+              #equation 15 params: 
+              beta.tilde <- theta[(p.mean.y+1):(p.mean.y+p.mix.prob)]
+              #equation 12 params:
+              delta <- 1+exp(theta[p.mean.y+p.mix.prob+1])
+              sigma2.mix1 <- exp(theta[p.mean.y+p.mix.prob+2])
+              sigma2.mix2 <- exp(theta[p.mean.y+p.mix.prob+3])
+              #equation 15:
+              pr.a.mix <- 1/(1+exp(-D.t.mix.prob%*%beta.tilde))
+              #equation 12 params:
+              mu.a.mix1 <- exp(D.t.y%*%beta)
+              mu.a.mix2 <- delta*mu.a.mix1
+              #natural log transformation of the mean and sd in equation 12:
+              mean.ln.mix1 <- log(mu.a.mix1/sqrt(1+sigma2.mix1/(mu.a.mix1^2)))
+              sd.ln.mix1 <- sqrt(log(1+sigma2.mix1/(mu.a.mix1^2)))
+              mean.ln.mix2 <- log(mu.a.mix2/sqrt(1+sigma2.mix2/(mu.a.mix2^2)))
+              sd.ln.mix2 <- sqrt(log(1+sigma2.mix2/(mu.a.mix2^2)))
+              #accounting for truncation in the distribution function:
+              trunc.prob <- pr.a.mix*pnorm(threshold.data,
+                                           mean=mean.ln.mix2,
+                                           sd=sd.ln.mix2,log=FALSE)+
+                (1-pr.a.mix)*pnorm(threshold.data,
+                                   mean=mean.ln.mix1,
+                                   sd=sd.ln.mix1,log=FALSE)
+              #probability density:
+              num <- (pr.a.mix*dnorm(y,
+                                     mean=mean.ln.mix2,
+                                     sd=sd.ln.mix2,log=FALSE)+
+                        (1-pr.a.mix)*dnorm(y,
+                                           mean=mean.ln.mix1,
+                                           sd=sd.ln.mix1,log=FALSE))
+              #the likelihood, accounting for truncation: 
+              llik <- sum(log(num)-log(trunc.prob))
+                  }
+             #optimization of the log likelihood: 
+            estim <- 
+                nlminb(start.theta,
+                     function(x) -log.lik(x),
+                     control=list(trace=1*messages))  
+            
+            library(numDeriv)
+            if(return.hessian) estim$H <- hessian(log.lik,estim$par)
+            #extracting the parameters from the UFM (see Table 1)
+            estim$regression.mean.antibody <- estim$par[1:p.mean.y]
+            estim$regression.mixing.prob <- estim$par[(p.mean.y+1):(p.mean.y+p.mix.prob)]
+            names(estim$regression.mean.antibody) <- colnames(D.t.y)
+            names(estim$regression.mixing.prob) <- colnames(D.t.mix.prob)
+            estim$delta <-  1+exp(estim$par[p.mean.y+p.mix.prob+1])
+            estim$sigma2.mix1 <-  exp(estim$par[p.mean.y+p.mix.prob+2])
+            estim$sigma2.mix2 <-  exp(estim$par[p.mean.y+p.mix.prob+3])
+            estim$formula.mean.y <- formula.mean.y
+            estim$formula.mix.prob <- formula.mix.prob
+            estim$D.t.y <- D.t.y
+            estim$D.t.mix.prob <- D.t.mix.prob
+            estim$aic <- 2*length(estim$par)+2*estim$objective
+            return(estim)
+          }
+      
+      
+#********************************************************************************************      
+#Fit the EM
+#********************************************************************************************  
+      
+      estim.emp <- lr.estim.mixture.emp(formula.mean.y,
+                                        formula.mix.prob)
+      #save the data
+      save(estim.emp,data,file="ama.emp.RData")
+
+```
+
+
+#STEP 5: GENERATING 95% CIs FOR THE EM PARAMETER ESTIMATES
+In this section we generate 95% CIs for the parameters estimated in the estim.emp object in Step 4. We conduct this using parametric bootstrap (see paper for details). This step is computationally intensive, and at Lancaster we use the High End Computing (HEC) Cluster. The code below can be used in R, but will likely take a very long time. 
+
+```{r, interventions, echo==FALSE}
+rm(list=ls())
+
+#********************************************************************************************      
+#Initialization for the HEC
+#********************************************************************************************  
+      #Depending on the facilities provided at your institution, this initialisation code will be different. This code is for initialization for the HEC at Lancaster University, or other similar facilities
+        # job_id = Sys.getenv("JOB_ID")
+        # job_name= Sys.getenv("JOB_NAME")
+        # 
+        # message("Job ID ",job_id)
+        # message("Job Name ",job_name)
+
+
+      load("ama.emp.RData") #load the data saved in step 4
+
+#********************************************************************************************      
+#Generate required vectors and objects
+#********************************************************************************************  
+        y <- log(data$ama_norm)
+        a <- data$age
+        ind.age <- list()
+        max.age <- max(a)
+        max.vec <- function(vec,c) sapply(vec,function(x) max(x-c,0))
+        n <- length(y)
+        n.sim <- 1000
+
+
+#********************************************************************************************  
+#Re-introduce the functions from Step 4 
+#********************************************************************************************  
+            
+        #********************************************* 
+        ##Linear predictors as decribed in equation 13
+        #*********************************************  
+          formula.mean.y <- ~ age + I((age>10)*(age-10))
+          formula.mix.prob <- ~ log(age)
+  
+                  
+        #**************************** 
+        ##Equation 12, 14 and 15
+        #****************************  
+        lr.estim.mixture.emp <- function(formula.mean.y,
+                                         formula.mix.prob,messages=TRUE,
+                                         start.theta=NULL,
+                                         return.hessian=FALSE) {
+        a.max <- max(a)
+        #matrix for equation 14:
+        D.t.y <- model.matrix(formula.mean.y,data=data.frame(age=a))
+        #matrix for equation 15:
+        D.t.mix.prob <- model.matrix(formula.mix.prob,data=data.frame(age=a))
+        
+        time.covar <- 0:(a.max-1)
+        #number of params for equation 14: 
+        p.mean.y <- ncol(D.t.y)
+        #number of params for equation 15: 
+        p.mix.prob <- ncol(D.t.mix.prob)
+        #initialize starting parameters = 0:
+        if(is.null(start.theta)) start.theta <- c(rep(0,p.mean.y+p.mix.prob+3)) 
+        #accounting for truncation of data (i.e because we are using 1-16yr olds instead of all the data)
+        threshold <- tapply(y,a,max)
+        threshold.data <- sapply(a,function(i)
+          threshold[i])
+        #log likelihood function for the EM:
+        log.lik <- function(theta) {
+          #equation 14 params: 
+          beta <- theta[1:p.mean.y]
+          #equation 15 params: 
+          beta.tilde <- theta[(p.mean.y+1):(p.mean.y+p.mix.prob)]
+          #equation 12 params:
+          delta <- 1+exp(theta[p.mean.y+p.mix.prob+1])
+          sigma2.mix1 <- exp(theta[p.mean.y+p.mix.prob+2])
+          sigma2.mix2 <- exp(theta[p.mean.y+p.mix.prob+3])
+          #equation 15:
+          pr.a.mix <- 1/(1+exp(-D.t.mix.prob%*%beta.tilde))
+          #equation 12 params:
+          mu.a.mix1 <- exp(D.t.y%*%beta)
+          mu.a.mix2 <- delta*mu.a.mix1
+          #natural log transformation of the mean and sd in equation 12:
+          mean.ln.mix1 <- log(mu.a.mix1/sqrt(1+sigma2.mix1/(mu.a.mix1^2)))
+          sd.ln.mix1 <- sqrt(log(1+sigma2.mix1/(mu.a.mix1^2)))
+          mean.ln.mix2 <- log(mu.a.mix2/sqrt(1+sigma2.mix2/(mu.a.mix2^2)))
+          sd.ln.mix2 <- sqrt(log(1+sigma2.mix2/(mu.a.mix2^2)))
+          #accounting for truncation in the distribution function:
+          trunc.prob <- pr.a.mix*pnorm(threshold.data,
+                                       mean=mean.ln.mix2,
+                                       sd=sd.ln.mix2,log=FALSE)+
+            (1-pr.a.mix)*pnorm(threshold.data,
+                               mean=mean.ln.mix1,
+                               sd=sd.ln.mix1,log=FALSE)
+          #probability density:
+          num <- (pr.a.mix*dnorm(y,
+                                 mean=mean.ln.mix2,
+                                 sd=sd.ln.mix2,log=FALSE)+
+                    (1-pr.a.mix)*dnorm(y,
+                                       mean=mean.ln.mix1,
+                                       sd=sd.ln.mix1,log=FALSE))
+          #the likelihood, accounting for truncation: 
+          llik <- sum(log(num)-log(trunc.prob))
+              }
+         #optimization of the log likelihood: 
+        estim <- 
+            nlminb(start.theta,
+                 function(x) -log.lik(x),
+                 control=list(trace=1*messages))  
+        
+        library(numDeriv)
+        if(return.hessian) estim$H <- hessian(log.lik,estim$par)
+        #extracting the parameters from the UFM (see Table 1)
+        estim$regression.mean.antibody <- estim$par[1:p.mean.y]
+        estim$regression.mixing.prob <- estim$par[(p.mean.y+1):(p.mean.y+p.mix.prob)]
+        names(estim$regression.mean.antibody) <- colnames(D.t.y)
+        names(estim$regression.mixing.prob) <- colnames(D.t.mix.prob)
+        estim$delta <-  1+exp(estim$par[p.mean.y+p.mix.prob+1])
+        estim$sigma2.mix1 <-  exp(estim$par[p.mean.y+p.mix.prob+2])
+        estim$sigma2.mix2 <-  exp(estim$par[p.mean.y+p.mix.prob+3])
+        estim$formula.mean.y <- formula.mean.y
+        estim$formula.mix.prob <- formula.mix.prob
+        estim$D.t.y <- D.t.y
+        estim$D.t.mix.prob <- D.t.mix.prob
+        estim$aic <- 2*length(estim$par)+2*estim$objective
+        return(estim)
+      }
+      
+#********************************************************************************************      
+#Extract the parameter estimates and objects from estim.emp into R objects
+#********************************************************************************************  
+      
+        #much of this code is copied from the lr.estim.mixture.emp function. 
+        D.t.y <- estim.emp$D.t.y
+        D.t.mix.prob <- estim.emp$D.t.mix.prob
+        p.mean.y <- ncol(D.t.y)
+        p.mix.prob <- ncol(D.t.mix.prob)
+        beta.mean <- estim.emp$regression.mean.antibody
+        beta.prob <- estim.emp$regression.mixing.prob
+        delta <- estim.emp$delta
+        sigma2.mix1 <- estim.emp$sigma2.mix1
+        sigma2.mix2 <- estim.emp$sigma2.mix2      
+        library(truncnorm)
+        threshold <- tapply(y,a,max)
+        threshold.data <- threshold[age]
+        mu.age.mix1 <- exp(D.t.y%*%estim.emp$regression.mean.antibody)
+        mu.age.mix2 <- mu.age.mix1*estim.emp$delta
+        mean.ln.mix1 = log(mu.age.mix1/sqrt(1+sigma2.mix1/(mu.age.mix1^2)))
+        sd.ln.mix1 = sqrt(log(1+sigma2.mix1/(mu.age.mix1^2)))
+        mean.ln.mix2 =log(mu.age.mix2/sqrt(1+sigma2.mix2/(mu.age.mix2^2)))
+        sd.ln.mix2 =sqrt(log(1+sigma2.mix2/(mu.age.mix2^2)))
+        pr.a.mix.emp <- as.numeric(1/(1+exp(-D.t.mix.prob%*%estim.emp$regression.mixing.prob)))
+
+              
+#********************************************************************************************  
+#Initiate lists to store the output from the bootstrap
+#********************************************************************************************  
+      
+      #List for the bootstrap samples:
+      out.estim.emp.sim.pars <- list(beta.mean =matrix(NA,nrow=n.sim,ncol=p.mean.y),
+                                     beta.prob=matrix(NA,nrow=n.sim,ncol=p.mix.prob),
+                                     delta=rep(NA,n.sim),
+                                     sigma2.mix1=rep(NA,n.sim),
+                                     sigma2.mix2=rep(NA,n.sim))
+      
+      #List for the initial estim.emp parameter values:
+      out.estim.emp.pars <- list(beta.mean= beta.mean,
+                                 beta.prob = beta.prob,
+                                 delta = delta,
+                                 sigma2.mix1 = sigma2.mix1,
+                                 sigma2.mix2 =sigma2.mix2)
+      
+      
+  #********************************************************************************************        
+  #Run the simulation
+  #********************************************************************************************  
+      
+      
+      for (i in 1:n.sim) {
+        #Generate a sampling of seropositives and seronegatives:
+        S.pos <- rbinom(n,1,pr.a.mix.emp)
+        which.pos <- which(S.pos==1)
+        n.pos <- length(which.pos)
+        n.neg <- n-n.pos
+        #Simulate y:
+        y.sim <- rep(NA,n)
+        y.sim[which.pos] <- rtruncnorm(n.pos,mean=mean.ln.mix2[which.pos],
+                                       sd=sd.ln.mix2[which.pos],
+                                       b=threshold.data[which.pos])
+        y.sim[-which.pos] <- rtruncnorm(n.neg,mean=mean.ln.mix1[-which.pos],
+                                        sd=sd.ln.mix1[-which.pos],
+                                        b=threshold.data[-which.pos])
+        y <- y.sim
+        #fit the model to the simulated y data:
+        estim.emp.sim<- lr.estim.mixture.emp(formula.mean.y,
+                                             formula.mix.prob)
+        #extract the parameter estimates:
+        beta.mean.hat <- estim.emp.sim$par[1:p.mean.y]
+        beta.prob.hat <- estim.emp.sim$par[(p.mean.y+1):(p.mean.y+p.mix.prob)]
+        delta.hat <- 1+exp(estim.emp.sim$par[p.mean.y+p.mix.prob+1])
+        sigma2.mix1.hat <- exp(estim.emp.sim$par[p.mean.y+p.mix.prob+2])
+        sigma2.mix2.hat <- exp(estim.emp.sim$par[p.mean.y+p.mix.prob+3])
+        #save the parameter estimates the out.estim.mix.sim.pars list:
+        out.estim.emp.sim.pars$beta.mean[i,] <- beta.mean.hat
+        out.estim.emp.sim.pars$beta.prob[i,] <- beta.prob.hat
+        out.estim.emp.sim.pars$delta[i] <- delta.hat
+        out.estim.emp.sim.pars$sigma2.mix1[i] <- sigma2.mix1.hat
+        out.estim.emp.sim.pars$sigma2.mix2[i] <- sigma2.mix2.hat
+        cat("Iter:",i,"\r")
+        }
+        #save estimates from estim.emp
+        save(out.estim.emp.pars,file=paste0("out.estim.emp.pars.ama.RData")) 
+        #save estimates from the bootstrap simulation
+        save(out.estim.emp.sim.pars,file=paste0("out.estim.emp.sim.pars.ama.RData")) 
+          
+
+```
+
+
+
+#STEP 6: COMPARING THE UFM AND EM (FIGURE 6)
+In this section we compare the UFM and EM mixture distributions, and generate Figure 6.  
+
+```{r, interventions, echo==FALSE}
+rm(list=ls())
+    #load UFM data from Step 2
+    load("ama.ufm.RData")
+    #load EM data from step 4
+    load("ama.emp.RData")
+    estim.mech <- estim.mix
+
+
+#********************************************************************************************      
+#Prep objects
+#********************************************************************************************  
+      #These objects are needed for the functions we will be generating in this section
+      y <- log(data$ama_norm)
+      a <- data$age
+      ind.age <- list()
+      max.age <- max(a)
+      max.vec <- function(vec,c) sapply(vec,function(x) max(x-c,0))
+      a.max <- max(a)
+      time.covar <- 0:(a.max-1)
+      
+
+#********************************************************************************************      
+#Copy UFM functions
+#********************************************************************************************  
+    #**************************** 
+    ##Equation 9
+    #****************************  
+      compute.pr.a <- function(age,lambda.h,omega) {
+        pr <- sum(lambda.h[1:age]/sapply(1:age,function(h)
+          prod(1+lambda.h[h:age]+omega)))
+        return(pr)
+      }
+      compute.pr.a <- Vectorize(compute.pr.a,"age")   
+
+    #**************************** 
+    ##Equation 10
+    #****************************  
+      compute.mu.a <- function(age,gamma.h,r) {
+        mu <- sum(((1/(1+r))^(1:age))*gamma.h[1:age])
+        return(mu)
+      }
+      compute.mu.a <- Vectorize(compute.mu.a,"age") 
+      
+
+#********************************************************************************************      
+#Copy EM functions
+#******************************************************************************************** 
+      
+    #********************************************* 
+    ##Linear predictors as decribed in equation 13 (See step 4)
+    #*********************************************  
+          formula.mean.y <- estim.emp$formula.mean.y
+          formula.mix.prob <- estim.emp$formula.mix.prob
+  
+#********************************************************************************************      
+#Compare
+#******************************************************************************************** 
+
+##function to compare age-dependent mixing probability distributions----
+      check.distr.age.compare <- function(estim.mech,estim.emp,age,plot.legend=FALSE) {
+        
+        # Mechanistic
+        l0 <- estim.mix$lambda[1]
+        l1 <- estim.mix$lambda[2]
+        lambda.h.hat <- exp(as.numeric(l0+l1*time.covar))
+        g0 <- estim.mix$gamma
+        gamma.h.hat <- as.numeric(rep(exp(g0),length(time.covar)))
+        mu.age.mix1 <- compute.mu.a(age,gamma.h.hat,estim.mech$r)
+        mu.age.mix2 <- mu.age.mix1*estim.mech$delta
+        mean.g.mix1.mech =log(mu.age.mix1/sqrt(1+estim.mech$sigma2.mix1/(mu.age.mix1^2)))
+        sd.g.mix1.mech = sqrt(log(1+estim.mech$sigma2.mix1/(mu.age.mix1^2)))
+        mean.g.mix2.mech =log(mu.age.mix2/sqrt(1+estim.mech$sigma2.mix2/(mu.age.mix2^2)))
+        sd.g.mix2.mech =sqrt(log(1+estim.mech$sigma2.mix2/(mu.age.mix2^2)))
+        threshold <- tapply(y,a,max)
+        threshold.data <- threshold[age]
+        pr.a.mix.mech <- compute.pr.a(age,lambda.h.hat,estim.mech$omega)
+        
+        
+        # Empirical
+        D.t.y <- model.matrix(estim.emp$formula.mean.y,data=data.frame(age=age))
+        D.t.mix.prob <- model.matrix(estim.emp$formula.mix.prob,data=data.frame(age=age))
+        mu.age.mix1 <- exp(D.t.y%*%estim.emp$regression.mean.antibody)
+        mu.age.mix2 <- mu.age.mix1*estim.emp$delta
+        mean.g.mix1.emp = log(mu.age.mix1/sqrt(1+estim.emp$sigma2.mix1/(mu.age.mix1^2)))
+        sd.g.mix1.emp = sqrt(log(1+estim.emp$sigma2.mix1/(mu.age.mix1^2)))
+        mean.g.mix2.emp =log(mu.age.mix2/sqrt(1+estim.emp$sigma2.mix2/(mu.age.mix2^2)))
+        sd.g.mix2.emp =sqrt(log(1+estim.emp$sigma2.mix2/(mu.age.mix2^2)))
+        threshold <- tapply(y,a,max)
+        threshold.data <- threshold[age]
+        pr.a.mix.emp <- as.numeric(1/(1+exp(-D.t.mix.prob%*%estim.emp$regression.mixing.prob)))
+        
+        par(mar=c(5.1,5,4.1,2.1))
+        hist(y[a==age], xlab="log OD", probability = TRUE, ylab="",
+             main=paste("Age ",age),breaks=10, cex.lab=2, cex.axis=1.5, cex.main=2, cex.sub=1.5, cex.axis=2,xlim=c(-8,2), ylim=c(0,0.5))
+        
+        f.mech <-  function(x) exp(log(pr.a.mix.mech*dnorm(x,mean.g.mix2.mech,sd.g.mix2.mech)+
+                                    (1-pr.a.mix.mech)*dnorm(x,mean.g.mix1.mech,sd.g.mix1.mech))-
+                                log(pr.a.mix.mech*pnorm(threshold.data,mean.g.mix2.mech,sd.g.mix2.mech)+
+                                      (1-pr.a.mix.mech)*
+                                      pnorm(threshold.data,mean.g.mix1.mech,sd.g.mix1.mech)))
+        f.mech <- Vectorize(f.mech,"x")
+          
+        f.emp <-  function(x) exp(log(pr.a.mix.emp*dnorm(x,mean.g.mix2.emp,sd.g.mix2.emp)+
+                                    (1-pr.a.mix.emp)*dnorm(x,mean.g.mix1.emp,sd.g.mix1.emp))-
+                                log(pr.a.mix.emp*pnorm(threshold.data,mean.g.mix2.emp,sd.g.mix2.emp)+
+                                      (1-pr.a.mix.emp)*
+                                      pnorm(threshold.data,mean.g.mix1.emp,sd.g.mix1.emp)))
+        f.emp <- Vectorize(f.emp,"x")
+        curve(f.mech,col=2,add = TRUE, lwd=3,xlim = c(-10,threshold.data))
+        curve(f.emp,col=4,add = TRUE, lwd=3,lty="dashed",xlim = c(-10,threshold.data))
+        if(plot.legend) legend(-1,0.5,c("Unified","Empirical"),col=c(2,4),lty=c("solid","dashed"),lwd=2.5,cex=1.5)
+        
+      }
+
+      check.distr.age.compare(estim.mech,estim.emp,age=1,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=2,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=3,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=4,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=5,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=6,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=7,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=8,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=9,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=10,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=11,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=12,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=13,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=14,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=15,plot.legend = F)
+      check.distr.age.compare(estim.mech,estim.emp,age=16,plot.legend = F)
+      
+      #plot(1:16,tapply(y,a,mean))
+ 
+ 
+```
+
+
+
+
+#STEP 7: SHOWING HOW LAMBDA OVER TIME IN THE UFM (FIGURE 7)
+In this section we look at how lambda changes over time, and generate Figure 7
+
+```{r, interventions, echo==FALSE}
+
+rm(list=ls())
+
+#load UFM data from steps 2 and 3
+load("ama.ufm.RData")
+load ("out.estim.mix.pars.ama.RData")
+load ("out.estim.mix.sim.pars.ama.RData")
+
+library(latex2exp)
+
+    plot.transmission.rate <- function(estim,max.age,log.scale=TRUE, CI=FALSE) {
+      a.max <- max(a)
+      h <- 0:a.max
+      
+      #equation 11:
+      l0 <- estim$lambda[1]
+      #to plot an unbiased estimate of l0, use:
+      #l0 <- estim$lambda[1]- (estim$lambda[1]-(mean(out.estim.mix.sim.pars$lambda[,1])))
+      l1 <- estim$lambda[2]
+      #to plot an unbiased estimate of l1, use:
+      #l1 <- estim$lambda[2] - (estim$lambda[2]-(mean(out.estim.mix.sim.pars$lambda[,2])))
+      lambda.h <- exp(as.numeric(l0+l1*h))
+    
+      if(!CI){
+        if(log.scale) {
+          par(mar=c(5.1, 4.9, 4.1, 2.1), mgp=c(2.5, 0.5, 0),las=1)
+          plot(h,log(lambda.h),type="l",col=c(1,4,4),lty="solid",
+               ylab=expression(lambda (h)), xlab = "h" ,cex.lab=2,cex.axis=1.5,cex.main=2)
+        } else {
+          par(mar=c(5.1, 4.9, 4.1, 2.1), mgp=c(2.5, 0.5, 0),las=1)
+          plot(h,lambda.h,type="l",col=c(1,4,4),lty="solid",
+               ylab=expression(lambda (h)), xlab = "h" ,cex.lab=2,cex.axis=1.5,cex.main=2)
+        } 
+      } else {
+        n.sim <- nrow(out.estim.mix.sim.pars$lambda)
+        lambda.h.sim <- matrix(NA,nrow=n.sim,ncol=length(lambda.h))
+        for(i in 1:n.sim) {
+          lambda.hat.i <- out.estim.mix.sim.pars$lambda[i,]
+          l0 <- lambda.hat.i[1]
+          l1 <- lambda.hat.i[2]
+          lambda.h.sim[i,] <- exp(as.numeric(l0+l1*h))
+        }
+        #generate CIs
+        q025 <- apply(lambda.h.sim,2,function(x) quantile(x,0.025))
+        q975 <- apply(lambda.h.sim,2,function(x) quantile(x,0.975))
+        if(log.scale) {
+          par(mar=c(5.1, 4.9, 4.1, 2.1), mgp=c(2.5, 0.5, 0),las=1)
+          matplot(h,log(cbind(lambda.h,q025,q975)),type="l",col=c(1,4,4),lty="solid",
+                  ylab=expression(lambda (h)), xlab = "h" ,cex.lab=2,cex.axis=1.5,cex.main=2)
+        } else {
+          par(mar=c(5.1, 4.9, 4.1, 2.1), mgp=c(2.5, 0.5, 0),las=1)
+          matplot(h,cbind(lambda.h,q025,q975),type="l",col=c(1,4,4),lty="solid",
+                  ylab=expression(lambda (h)), xlab = "h" ,cex.lab=2,cex.axis=1.5,cex.main=2)
+        }
+      }
+    }
+    #plot with CIs
+    plot.transmission.rate(estim.mix,16,log.scale = TRUE, CI=TRUE) 
+    #plot without CIs
+    plot.transmission.rate(estim.mix,16,log.scale = TRUE, CI=FALSE) 
+
+
+```
+
+
+#STEP 8: COMPARING THE UFM AND EM (TABLE 1)
+In this step we compile elements of Table 1, i.e. the parameter estimates for both the UFM and EM, as well as their CIs.
+
+
+```{r, interventions, echo==FALSE}
+#load UFM data from steps 2 and 3
+load("ama.ufm.RData")
+load ("out.estim.mix.pars.ama.RData")
+load ("out.estim.mix.sim.pars.ama.RData")
+
+#load EM data from steps 4 and 5
+load("ama.em.RData")
+load ("out.estim.emp.pars.ama.RData")
+load ("out.estim.emp.sim.pars.ama.RData")
+
+      
+
+#********************************************************************************************      
+#UFM estimates and CIs
+#********************************************************************************************  
+
+        #Extract the UFM parameter estimates
+        l0.mech <- estim.mix$lambda[1]
+        l1.mech <- estim.mix$lambda[2]
+        g0.mech <- estim.mix$gamma
+        delta.mech <- estim.mix$delta
+        sigma2.mix1.mech <- estim.mix$sigma2.mix1
+        sigma2.mix2.mech <- estim.mix$sigma2.mix2
+        r.mech <- estim.mix$r
+        omega.mech <- estim.mix$omega
+        mech.list <- list(l0.mech=l0.mech,
+                          l1.mech=l1.mech,
+                          g0.mech=g0.mech,
+                          delta.mech=delta.mech,
+                          sigma2.mix1.mech=sigma2.mix1.mech,
+                          sigma2.mix2.mech =sigma2.mix2.mech,
+                          r.mech=r.mech,
+                          omega.mech=omega.mech
+        )   
+        mech.pars<- as.data.frame(do.call(rbind, mech.list))
+        library(dplyr)
+        mech.pars <- mech.pars %>% 
+          dplyr::rename(estim=lambda0)
+
+        #Extract the means of parameter estimates from UFM bootstrap in step 3. 
+        l0.mech <- mean(out.estim.mix.sim.pars$lambda[,1])
+        l1.mech <- mean(out.estim.mix.sim.pars$lambda[,2])
+        g0.mech <- mean(out.estim.mix.sim.pars$gamma)
+        r.mech <- mean(out.estim.mix.sim.pars$r)
+        delta.mech <- mean(out.estim.mix.sim.pars$delta)
+        sigma2.mix1.mech <- mean(out.estim.mix.sim.pars$sigma2.mix1)
+        sigma2.mix2.mech <- mean(out.estim.mix.sim.pars$sigma2.mix2)
+        omega.mech <- mean(out.estim.mix.sim.pars$omega)
+        mech.list <- list(l0.mech=l0.mech,
+                          l1.mech=l1.mech,
+                          g0.mech=g0.mech,
+                          r.mech=r.mech,
+                          delta.mech=delta.mech,
+                          sigma2.mix1.mech=sigma2.mix1.mech,
+                          sigma2.mix2.mech =sigma2.mix2.mech,
+                          omega.mech=omega.mech
+        )   
+        mech.pars.mean <- as.data.frame(do.call(rbind, mech.list))
+        library(dplyr)
+        mech.pars.mean <- mech.pars.mean %>% 
+          dplyr::rename(mean=V1)
+
+        #Extract the standard deviations of parameter estimates from UFM bootstrap in step 3. 
+        l0.mech <- sd(out.estim.mix.sim.pars$lambda[,1])
+        l1.mech <- sd(out.estim.mix.sim.pars$lambda[,2])
+        g0.mech <- sd(out.estim.mix.sim.pars$gamma)
+        r.mech <- sd(out.estim.mix.sim.pars$r)
+        delta.mech <- sd(out.estim.mix.sim.pars$delta)
+        sigma2.mix1.mech <- sd(out.estim.mix.sim.pars$sigma2.mix1)
+        sigma2.mix2.mech <- sd(out.estim.mix.sim.pars$sigma2.mix2)
+        omega.mech <- sd(out.estim.mix.sim.pars$omega)
+        mech.list <- list(l0.mech=l0.mech,
+                          l1.mech=l1.mech,
+                          g0.mech=g0.mech,
+                          r.mech=r.mech,
+                          delta.mech=delta.mech,
+                          sigma2.mix1.mech=sigma2.mix1.mech,
+                          sigma2.mix2.mech =sigma2.mix2.mech,
+                          omega.mech=omega.mech
+        )   
+        mech.pars.sd<- as.data.frame(do.call(rbind, mech.list))
+        library(dplyr)
+        mech.pars.sd <- mech.pars.sd %>% 
+          dplyr::rename(sd=V1)
+        
+        #Extract the 0.025 and 0.975 quantiles of parameter estimates from UFM bootstrap in step 3. 
+        l0.mech <- quantile(out.estim.mix.sim.pars$lambda[,1], c(0.025,0.975))
+        l1.mech <- quantile(out.estim.mix.sim.pars$lambda[,2], c(0.025,0.975))
+        g0.mech <- quantile(out.estim.mix.sim.pars$gamma, c(0.025,0.975))
+        r.mech <- quantile(out.estim.mix.sim.pars$r, c(0.025,0.975))
+        delta.mech <- quantile(out.estim.mix.sim.pars$delta, c(0.025,0.975))
+        sigma2.mix1.mech <- quantile(out.estim.mix.sim.pars$sigma2.mix1, c(0.025,0.975))
+        sigma2.mix2.mech <- quantile(out.estim.mix.sim.pars$sigma2.mix2, c(0.025,0.975))
+        omega.mech <- quantile(out.estim.mix.sim.pars$omega, c(0.025,0.975))
+        mech.list <- list(l0.mech=l0.mech,
+                          l1.mech=l1.mech,
+                          g0.mech=g0.mech,
+                          r.mech=r.mech,
+                          delta.mech=delta.mech,
+                          sigma2.mix1.mech=sigma2.mix1.mech,
+                          sigma2.mix2.mech =sigma2.mix2.mech,
+                          omega.mech=omega.mech
+        )   
+        
+        mech.pars.quant<- as.data.frame(do.call(rbind, mech.list))
+
+        #merge the extracted values into one table, ie. mech.tab
+        mech12 <- merge(mech.pars, mech.pars.mean, by=0, all=T)
+        rownames(mech12) <- mech12$Row.names; mech12$Row.names <- NULL
+        mech123 <- merge(mech12, mech.pars.sd, by=0, all=T)
+        rownames(mech123) <- mech123$Row.names; mech123$Row.names <- NULL
+        mech1234 <- merge(mech123, mech.pars.quant, by=0, all=T)
+        rownames(mech1234) <- mech1234$Row.names; mech1234$Row.names <- NULL
+        mech1234
+        mech.tab <- mech1234
+
+
+#********************************************************************************************      
+#EM estimates and CIs
+#********************************************************************************************  
+
+        #Extract the EM parameter estimates
+        delta.emp <- estim.emp$delta
+        sigma2.mix1.emp <- estim.emp$sigma2.mix1
+        sigma2.mix2.emp<- estim.emp$sigma2.mix2
+        reg.mean.b1 <- estim.emp$regression.mean.antibody[1]
+        reg.mean.b2 <- estim.emp$regression.mean.antibody[2]
+        reg.mean.b3 <- estim.emp$regression.mean.antibody[3]
+        reg.mix.b0 <- estim.emp$regression.mixing.prob[1]
+        reg.mix.b1 <- estim.emp$regression.mixing.prob[2]
+        emp.list <- list(delta.emp=delta.emp,
+                         sigma2.mix1.emp=sigma2.mix1.emp,
+                         sigma2.mix2.emp =sigma2.mix2.emp,
+                         reg.mean.b1=reg.mean.b1,
+                         reg.mean.b2=reg.mean.b2,
+                         reg.mean.b3=reg.mean.b3,
+                         reg.mix.b0=reg.mix.b0,
+                         reg.mix.b1=reg.mix.b1
+        )   
+        emp.pars<- as.data.frame(do.call(rbind, emp.list))
+        library(dplyr)
+        emp.pars <- emp.pars %>% 
+          dplyr::rename(estim="(Intercept)")
+        
+        #Extract the means of parameter estimates from UFM bootstrap in step 5. 
+        delta.emp <- mean(out.estim.emp.sim.pars$delta)
+        reg.mean.b1 <-  mean(out.estim.emp.sim.pars$beta.mean[,1])
+        reg.mean.b2 <-  mean(out.estim.emp.sim.pars$beta.mean[,2])
+        reg.mean.b3 <-  mean(out.estim.emp.sim.pars$beta.mean[,3])
+        reg.mix.b0 <-  mean(out.estim.emp.sim.pars$beta.prob[,1])
+        reg.mix.b1 <-  mean(out.estim.emp.sim.pars$beta.prob[,2])
+        sigma2.mix1.emp <- mean(out.estim.emp.sim.pars$sigma2.mix1)
+        sigma2.mix2.emp <- mean(out.estim.emp.sim.pars$sigma2.mix2)
+        emp.list <- list(delta.emp=delta.emp,
+                         sigma2.mix1.emp=sigma2.mix1.emp,
+                         sigma2.mix2.emp =sigma2.mix2.emp, 
+                         reg.mean.b1=reg.mean.b1,
+                         reg.mean.b2=reg.mean.b2,
+                         reg.mean.b3=reg.mean.b3,
+                         reg.mix.b0=reg.mix.b0,
+                         reg.mix.b1=reg.mix.b1
+        )   
+        emp.pars.mean<- as.data.frame(do.call(rbind, emp.list))
+        library(dplyr)
+        emp.pars.mean <- emp.pars.mean %>% 
+          dplyr::rename(mean=V1)
+        
+        #Extract the standard deviations of parameter estimates from UFM bootstrap in step 5. 
+        delta.emp <- sd(out.estim.emp.sim.pars$delta)
+        reg.mean.b1 <-  sd(out.estim.emp.sim.pars$beta.mean[,1])
+        reg.mean.b2 <-  sd(out.estim.emp.sim.pars$beta.mean[,2])
+        reg.mean.b3 <-  sd(out.estim.emp.sim.pars$beta.mean[,3])
+        reg.mix.b0 <-  sd(out.estim.emp.sim.pars$beta.prob[,1])
+        reg.mix.b1 <-  sd(out.estim.emp.sim.pars$beta.prob[,2])
+        sigma2.mix1.emp <- sd(out.estim.emp.sim.pars$sigma2.mix1)
+        sigma2.mix2.emp <- sd(out.estim.emp.sim.pars$sigma2.mix2)
+        emp.list <- list(delta.emp=delta.emp,
+                         sigma2.mix1.emp=sigma2.mix1.emp,
+                         sigma2.mix2.emp =sigma2.mix2.emp, 
+                         reg.mean.b1=reg.mean.b1,
+                         reg.mean.b2=reg.mean.b2,
+                         reg.mean.b3=reg.mean.b3,
+                         reg.mix.b0=reg.mix.b0,
+                         reg.mix.b1=reg.mix.b1
+        )   
+        emp.pars.sd<- as.data.frame(do.call(rbind, emp.list))
+        library(dplyr)
+        emp.pars.sd <- emp.pars.sd %>% 
+          dplyr::rename(sd=V1)
+        
+        
+        
+        #Extract the 0.025 and 0.975 quantiles of parameter estimates from UFM bootstrap in step 5.
+        delta.emp <- quantile(out.estim.emp.sim.pars$delta, c(0.025,0.975))
+        reg.mean.b1 <-  quantile(out.estim.emp.sim.pars$beta.mean[,1], c(0.025,0.975))
+        reg.mean.b2 <-  quantile(out.estim.emp.sim.pars$beta.mean[,2], c(0.025,0.975))
+        reg.mean.b3 <-  quantile(out.estim.emp.sim.pars$beta.mean[,3], c(0.025,0.975))
+        reg.mix.b0 <-  quantile(out.estim.emp.sim.pars$beta.prob[,1], c(0.025,0.975))
+        reg.mix.b1 <-  quantile(out.estim.emp.sim.pars$beta.prob[,2], c(0.025,0.975))
+        sigma2.mix1.emp <- quantile(out.estim.emp.sim.pars$sigma2.mix1, c(0.025,0.975))
+        sigma2.mix2.emp <- quantile(out.estim.emp.sim.pars$sigma2.mix2, c(0.025,0.975))
+        emp.list <- list(delta.emp=delta.emp,
+                         sigma2.mix1.emp=sigma2.mix1.emp,
+                         sigma2.mix2.emp =sigma2.mix2.emp, 
+                         reg.mean.b1=reg.mean.b1,
+                         reg.mean.b2=reg.mean.b2,
+                         reg.mean.b3=reg.mean.b3,
+                         reg.mix.b0=reg.mix.b0,
+                         reg.mix.b1=reg.mix.b1
+        )   
+        emp.pars.quant<- as.data.frame(do.call(rbind, emp.list))
+        
+        
+        #merge the extracted values into one table, ie. emp.tab
+        emp12 <- merge(emp.pars, emp.pars.mean, by=0, all=T)
+        rownames(emp12) <- emp12$Row.names; emp12$Row.names <- NULL
+        emp123 <- merge(emp12, emp.pars.sd, by=0, all=T)
+        rownames(emp123) <- emp123$Row.names; emp123$Row.names <- NULL
+        emp1234 <- merge(emp123, emp.pars.quant, by=0, all=T)
+        rownames(emp1234) <- emp1234$Row.names; emp1234$Row.names <- NULL
+        emp1234
+        emp.tab <- emp1234
+
+```
+
